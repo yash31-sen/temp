@@ -1,0 +1,18 @@
+node bin/vb-analyzer.js analyze "E:\.netCode" — Runs standard analysis on project and outputs JSON report.
+node bin/vb-analyzer.js analyze "E:\.netCode" --verbose — Runs analysis with detailed step-by-step console logs.
+node bin/vb-analyzer.js analyze "E:\.netCode" --output "E:\.netCode\report.json" — Runs analysis and saves report to custom path.
+node bin/vb-analyzer.js analyze "E:\.netCode" --target java-spring-angular — Runs analysis targeting Java Spring Boot + Angular stack.
+node bin/vb-analyzer.js analyze "E:\.netCode" --target csharp-angular — Runs analysis targeting C# .NET Core + Angular stack.
+node bin/vb-analyzer.js analyze "E:\.netCode" --platform linux — Runs analysis checking Linux deployment compatibility.
+node bin/vb-analyzer.js analyze "E:\.netCode" --platform windows — Runs analysis checking Windows deployment compatibility.
+node bin/vb-analyzer.js analyze "E:\.netCode" --silent — Runs analysis quietly with no console logs except errors.
+node bin/vb-analyzer.js analyze "E:\.netCode" --rules-dir "C:\custom-rules" — Runs analysis using custom external rule files.
+node bin/vb-analyzer.js rules — Lists all 51 built-in rules grouped by category.
+node bin/vb-analyzer.js rules --category SECURITY — Lists only security-related detection rules.
+node bin/vb-analyzer.js rules --category VBNET_CONSTRUCT — Lists only VB.NET language construct rules.
+node bin/vb-analyzer.js rules --category DATABASE_DEPENDENCY — Lists only database pattern detection rules.
+node bin/vb-analyzer.js rules --category PLATFORM_DEPENDENCY — Lists only platform/OS dependency rules.
+node bin/vb-analyzer.js rules --json — Exports all rule definitions in JSON format.
+npm link (inside e:\Office\vb-analyzer) — Installs CLI tool globally as vb-analyzer.
+vb-analyzer analyze "E:\.netCode" — Runs global command from any directory on system.
+11:36 AM
