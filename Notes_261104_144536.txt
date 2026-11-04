@@ -1,0 +1,762 @@
+#!/usr/bin/env python3
+"""
+Enterprise Markdown to PDF Converter
+
+Features:
+• Markdown content preservation
+• Professional PDF styling
+• Syntax-highlighted code blocks
+• Tables, images, lists, links and blockquotes
+• Automatic table of contents
+• Page headers and footers
+• Extractive summary on the final page
+• CLI interface
+
+Usage:
+python3.11 app.py -m input/sample.md
+
+Optional:
+python3.11 app.py -m input/sample.md -o output/report.pdf
+"""
+
+import argparse
+import logging
+import re
+import sys
+from collections import Counter
+from datetime import datetime
+from pathlib import Path
+from html import escape
+
+import markdown
+from bs4 import BeautifulSoup
+from pygments.formatters import HtmlFormatter
+from weasyprint import HTML, CSS
+
+---------------------------------------------------------
+CONFIGURATION
+---------------------------------------------------------
+
+APP_NAME = "Enterprise Markdown PDF Converter"
+VERSION = "1.0.0"
+
+DEFAULT_OUTPUT_DIR = Path("output")
+
+STOP_WORDS = {
+"the", "is", "are", "was", "were", "a", "an", "and",
+"or", "but", "to", "of", "in", "on", "for", "with",
+"as", "by", "at", "from", "this", "that", "these",
+"those", "it", "its", "be", "been", "being", "have",
+"has", "had", "do", "does", "did", "will", "would",
+"can", "could", "should", "may", "might", "must",
+"we", "you", "they", "them", "their", "our", "your",
+"he", "she", "his", "her", "i", "me", "my", "not",
+"if", "then", "than", "so", "such", "also", "into",
+"about", "which", "who", "what", "when", "where",
+"how", "there", "here", "all", "any", "each", "more",
+"most", "some", "other", "only", "very", "just"
+}
+
+---------------------------------------------------------
+LOGGING
+---------------------------------------------------------
+
+logging.basicConfig(
+level=logging.INFO,
+format="%(asctime)s | %(levelname)-8s | %(message)s",
+datefmt="%Y-%m-%d %H:%M:%S"
+)
+
+logger = logging.getLogger(APP_NAME)
+
+---------------------------------------------------------
+MARKDOWN PROCESSING
+---------------------------------------------------------
+
+class MarkdownProcessor:
+
+EXTENSIONS = [
+"extra",
+"toc",
+"tables",
+"fenced_code",
+"codehilite",
+"sane_lists",
+"smarty",
+"attr_list",
+"md_in_html",
+"footnotes"
+ ]
+
+@staticmethod
+def process(content: str):
+
+md = markdown.Markdown(
+extensions=MarkdownProcessor.EXTENSIONS,
+extension_configs={
+"toc": {
+"title": "Contents",
+"permalink": True,
+"toc_depth": "1-4"
+},
+"codehilite": {
+"guess_lang": True,
+"linenums": False,
+"css_class": "highlight"
+}
+},
+output_format="html5"
+)
+
+rendered_html = md.convert(content)
+
+# Generate TOC separately so it appears automatically,
+# even if the original Markdown does not contain [TOC].
+toc_html = md.toc
+
+return rendered_html, toc_html
+
+---------------------------------------------------------
+DOCUMENT METADATA
+---------------------------------------------------------
+
+def extract_title(rendered_html: str, source: Path) -> str:
+
+soup = BeautifulSoup(rendered_html, "html.parser")
+
+heading = soup.find("h1")
+
+if heading:
+title = heading.get_text(" ", strip=True)
+if title:
+return title
+
+return source.stem.replace("_", " ").replace("-", " ").title()
+
+---------------------------------------------------------
+SUMMARY GENERATOR
+---------------------------------------------------------
+
+class SummaryGenerator:
+"""
+Creates a local extractive summary.
+
+Selects important sentences based on word frequency.
+It does not invent new facts or call an external AI service.
+"""
+
+@staticmethod
+def generate(rendered_html: str, max_sentences: int = 5) -> list:
+
+soup = BeautifulSoup(rendered_html, "html.parser")
+
+# Exclude code, navigation, and non-text elements.
+for element in soup.select(
+"pre, code, script, style, nav, img, svg"
+):
+element.decompose()
+
+text = soup.get_text(" ", strip=True)
+
+# Remove excessive whitespace.
+text = re.sub(r"\s+", " ", text).strip()
+
+if not text:
+return ["No readable textual content was found."]
+
+# Split text into sentences.
+sentences = re.split(
+r'(?<=[.!?])\s+(?=[A-Z0-9])',
+text
+)
+
+sentences = [
+sentence.strip()
+for sentence in sentences
+if len(sentence.split()) >= 5
+ ]
+
+if not sentences:
+return [text[:500]]
+
+# Extract meaningful words.
+words = re.findall(r"\b[a-zA-Z0-9_-]+\b", text.lower())
+
+meaningful_words = [
+word for word in words
+if word not in STOP_WORDS and len(word) > 2
+ ]
+
+frequency = Counter(meaningful_words)
+
+if not frequency:
+return sentences[:max_sentences]
+
+max_frequency = max(frequency.values())
+
+# Normalize word frequencies.
+scores = {
+word: count / max_frequency
+for word, count in frequency.items()
+}
+
+ranked = []
+
+for index, sentence in enumerate(sentences):
+
+sentence_words = re.findall(
+r"\b[a-zA-Z0-9_-]+\b",
+sentence.lower()
+)
+
+valid_words = [
+word for word in sentence_words
+if word not in STOP_WORDS and len(word) > 2
+ ]
+
+if not valid_words:
+continue
+
+score = sum(
+scores.get(word, 0)
+for word in valid_words
+) / len(valid_words)
+
+# Slightly prefer informative sentences,
+# without allowing very long sentences to dominate.
+score *= min(len(valid_words), 30) / 20
+
+ranked.append((score, index, sentence))
+
+ranked.sort(key=lambda item: item[0], reverse=True)
+
+selected = ranked[:max_sentences]
+
+# Restore original document order.
+selected.sort(key=lambda item: item[1])
+
+return [item[2] for item in selected]
+
+---------------------------------------------------------
+HTML DOCUMENT GENERATOR
+---------------------------------------------------------
+
+class HTMLDocumentBuilder:
+
+@staticmethod
+def build(
+title: str,
+rendered_html: str,
+toc_html: str,
+summary: list
+) -> str:
+
+generated_at = datetime.now().strftime(
+"%d %B %Y, %I:%M %p"
+)
+
+summary_html = "".join(
+f"<li>{escape(sentence)}</li>"
+for sentence in summary
+)
+
+toc_section = ""
+
+if toc_html and toc_html.strip():
+toc_section = f"""
+<section class="toc-section">
+{toc_html}
+</section>
+"""
+
+pygments_css = HtmlFormatter(
+style="friendly"
+).get_style_defs(".highlight")
+
+document = f"""
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+<meta charset="UTF-8">
+
+<meta name="viewport"
+content="width=device-width, initial-scale=1.0">
+
+<title>{escape(title)}</title>
+
+<style>
+{pygments_css}
+
+@page {{
+size: A4;
+margin: 22mm 19mm 23mm 19mm;
+
+@top-left {{
+content: string(document-title);
+font-size: 8pt;
+color: #64748b;
+font-family: sans-serif;
+}}
+
+@top-right {{
+content: "CONFIDENTIAL DOCUMENT";
+font-size: 7pt;
+color: #94a3b8;
+font-family: sans-serif;
+}}
+
+@bottom-left {{
+content: "Generated by {APP_NAME}";
+font-size: 8pt;
+color: #94a3b8;
+font-family: sans-serif;
+}}
+
+@bottom-right {{
+content: "Page " counter(page) " of "
+counter(pages);
+font-size: 8pt;
+color: #64748b;
+font-family: sans-serif;
+}}
+}}
+
+@page:first {{
+@top-left {{ content: none; }}
+@top-right {{ content: none; }}
+@bottom-left {{ content: none; }}
+@bottom-right {{ content: none; }}
+}}
+
+* {{
+box-sizing: border-box;
+}}
+
+body {{
+font-family: "DejaVu Sans", sans-serif;
+font-size: 10pt;
+line-height: 1.75;
+color: #263445;
+background: white;
+overflow-wrap: break-word;
+}}
+
+.document-header {{
+padding: 30px 0 22px;
+border-bottom: 3px solid #2563eb;
+margin-bottom: 30px;
+}}
+
+.document-header h1 {{
+font-size: 27pt;
+color: #142d4e;
+line-height: 1.3;
+margin: 0 0 12px;
+string-set: document-title content();
+}}
+
+.document-meta {{
+color: #64748b;
+font-size: 9pt;
+}}
+
+.toc-section {{
+background: #f5f8fc;
+border: 1px solid #e2e8f0;
+border-radius: 7px;
+padding: 20px 25px;
+margin: 25px 0 35px;
+page-break-inside: avoid;
+}}
+
+.toc-section h2 {{
+font-size: 16pt;
+color: #17365d;
+margin-top: 0;
+}}
+
+.toc-section ul {{
+padding-left: 20px;
+}}
+
+.toc-section li {{
+margin: 5px 0;
+}}
+
+a {{
+color: #2563eb;
+text-decoration: none;
+}}
+
+h1, h2, h3, h4 {{
+color: #17365d;
+line-height: 1.4;
+page-break-after: avoid;
+}}
+
+h1 {{
+font-size: 23pt;
+margin-top: 30px;
+padding-bottom: 8px;
+border-bottom: 1px solid #dbe4ef;
+}}
+
+h2 {{
+font-size: 17pt;
+margin-top: 27px;
+}}
+
+h3 {{
+font-size: 13pt;
+margin-top: 22px;
+}}
+
+h4 {{
+font-size: 11pt;
+margin-top: 18px;
+}}
+
+p {{
+margin: 10px 0 14px;
+text-align: left;
+orphans: 3;
+widows: 3;
+}}
+
+ul, ol {{
+padding-left: 26px;
+margin: 10px 0 18px;
+}}
+
+li {{
+margin: 5px 0;
+}}
+
+blockquote {{
+margin: 18px 0;
+padding: 12px 18px;
+background: #f1f5f9;
+border-left: 4px solid #3b82f6;
+color: #475569;
+}}
+
+table {{
+width: 100%;
+border-collapse: collapse;
+margin: 20px 0;
+font-size: 9pt;
+page-break-inside: auto;
+}}
+
+thead {{
+display: table-header-group;
+}}
+
+tr {{
+page-break-inside: avoid;
+page-break-after: auto;
+}}
+
+th {{
+background: #17365d;
+color: white;
+font-weight: bold;
+text-align: left;
+}}
+
+th, td {{
+padding: 9px 10px;
+border: 1px solid #dbe4ef;
+vertical-align: top;
+}}
+
+tr:nth-child(even) td {{
+background: #f8fafc;
+}}
+
+pre {{
+background: #f3f6fa;
+border: 1px solid #e2e8f0;
+border-radius: 5px;
+padding: 14px;
+font-size: 8pt;
+line-height: 1.5;
+white-space: pre-wrap;
+overflow-wrap: anywhere;
+page-break-inside: auto;
+}}
+
+code {{
+font-family: "DejaVu Sans Mono", monospace;
+font-size: 0.9em;
+}}
+
+p code, li code {{
+background: #edf2f7;
+padding: 2px 4px;
+border-radius: 3px;
+color: #be123c;
+}}
+
+img {{
+max-width: 100%;
+height: auto;
+display: block;
+margin: 18px auto;
+page-break-inside: avoid;
+}}
+
+hr {{
+border: none;
+border-top: 1px solid #dbe4ef;
+margin: 25px 0;
+}}
+
+.summary-page {{
+page-break-before: always;
+}}
+
+.summary-header {{
+color: #17365d;
+font-size: 23pt;
+border-bottom: 3px solid #2563eb;
+padding-bottom: 12px;
+}}
+
+.summary-description {{
+color: #64748b;
+margin-bottom: 25px;
+}}
+
+.summary-list {{
+padding-left: 25px;
+}}
+
+.summary-list li {{
+margin-bottom: 15px;
+line-height: 1.8;
+}}
+
+.summary-footer {{
+margin-top: 35px;
+padding-top: 15px;
+border-top: 1px solid #dbe4ef;
+color: #64748b;
+font-size: 9pt;
+}}
+
+.highlight {{
+overflow-wrap: anywhere;
+}}
+
+</style>
+</head>
+
+<body>
+
+<header class="document-header">
+
+<h1>{escape(title)}</h1>
+
+<div class="document-meta">
+<strong>Document:</strong>
+{escape(title)}
+<br>
+
+<strong>Generated:</strong>
+{escape(generated_at)}
+<br>
+
+<strong>Format:</strong>
+Markdown to PDF
+</div>
+
+</header>
+
+{toc_section}
+
+<main class="document-content">
+{rendered_html}
+</main>
+
+<section class="summary-page">
+
+<h1 class="summary-header">
+Executive Summary
+</h1>
+
+<p class="summary-description">
+A concise overview of the key information
+and important points covered in this document.
+</p>
+
+<ul class="summary-list">
+{summary_html}
+</ul>
+
+<div class="summary-footer">
+End of Document
+<br>
+Generated using {APP_NAME} v{VERSION}
+</div>
+
+</section>
+
+</body>
+</html>
+"""
+
+return document
+
+---------------------------------------------------------
+PDF CONVERTER
+---------------------------------------------------------
+
+class PDFConverter:
+
+@staticmethod
+def convert(markdown_path: Path, output_path: Path):
+
+logger.info("Reading Markdown file: %s", markdown_path)
+
+content = markdown_path.read_text(encoding="utf-8")
+
+if not content.strip():
+raise ValueError("The Markdown file is empty.")
+
+logger.info("Processing Markdown content...")
+
+rendered_html, toc_html = MarkdownProcessor.process(
+content
+)
+
+title = extract_title(rendered_html, markdown_path)
+
+logger.info("Generating document summary...")
+
+summary = SummaryGenerator.generate(rendered_html)
+
+logger.info("Building professional HTML document...")
+
+html_document = HTMLDocumentBuilder.build(
+title=title,
+rendered_html=rendered_html,
+toc_html=toc_html,
+summary=summary
+)
+
+output_path.parent.mkdir(
+parents=True,
+exist_ok=True
+)
+
+logger.info("Rendering PDF...")
+
+# Use the Markdown file's directory as the base URL
+# so relative image paths continue to work.
+HTML(
+string=html_document,
+base_url=str(markdown_path.parent.resolve())
+).write_pdf(
+str(output_path)
+)
+
+logger.info("PDF successfully generated!")
+logger.info("Output: %s", output_path.resolve())
+
+return output_path
+
+---------------------------------------------------------
+COMMAND LINE INTERFACE
+---------------------------------------------------------
+
+def parse_arguments():
+
+parser = argparse.ArgumentParser(
+prog="markdown-to-pdf",
+description=(
+"Convert Markdown files into professionally "
+"formatted enterprise PDF documents."
+)
+)
+
+parser.add_argument(
+"-m",
+"--markdown",
+required=True,
+help="Path to the input Markdown file."
+)
+
+parser.add_argument(
+"-o",
+"--output",
+help="Optional output PDF path."
+)
+
+return parser.parse_args()
+
+def main():
+
+args = parse_arguments()
+
+markdown_path = Path(args.markdown).expanduser().resolve()
+
+if not markdown_path.exists():
+logger.error(
+"Input file does not exist: %s",
+markdown_path
+)
+sys.exit(1)
+
+if not markdown_path.is_file():
+logger.error("Input path is not a file.")
+sys.exit(1)
+
+if markdown_path.suffix.lower() != ".md":
+logger.error("Only .md files are supported.")
+sys.exit(1)
+
+if args.output:
+output_path = Path(args.output).expanduser().resolve()
+else:
+DEFAULT_OUTPUT_DIR.mkdir(
+parents=True,
+exist_ok=True
+)
+
+output_path = (
+DEFAULT_OUTPUT_DIR /
+f"{markdown_path.stem}.pdf"
+).resolve()
+
+if output_path.suffix.lower() != ".pdf":
+logger.error("Output file must have a .pdf extension.")
+sys.exit(1)
+
+if output_path == markdown_path:
+logger.error("Input and output paths must be different.")
+sys.exit(1)
+
+try:
+
+logger.info("=" * 65)
+logger.info("%s v%s", APP_NAME, VERSION)
+logger.info("=" * 65)
+
+PDFConverter.convert(
+markdown_path,
+output_path
+)
+
+logger.info("=" * 65)
+logger.info("CONVERSION COMPLETED SUCCESSFULLY")
+logger.info("=" * 65)
+
+except Exception as exc:
+
+logger.exception("PDF conversion failed: %s", exc)
+sys.exit(1)
+
+if name == "main":
+main()
